@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:logging/logging.dart';
@@ -44,15 +45,14 @@ class Win32BiometricStoragePlugin extends BiometricStorage {
     String name,
     PromptInfo promptInfo,
   ) async {
-    final namePointer = TEXT(name);
+    final namePointer = PCWSTR(name.toNativeUtf16());
     try {
-      final result = CredDelete(namePointer, CRED_TYPE.CRED_TYPE_GENERIC, 0);
-      if (result != TRUE) {
-        final errorCode = GetLastError();
-        if (errorCode == WIN32_ERROR.ERROR_NOT_FOUND) {
+      final result = CredDelete(namePointer, CRED_TYPE_GENERIC);
+      if (!result.value) {
+        if (result.error == ERROR_NOT_FOUND) {
           _logger.fine('Unable to find credential of name $name');
         } else {
-          _logger.warning('Error ($result): $errorCode');
+          _logger.warning('Error: ${result.error}');
         }
         return false;
       }
@@ -69,16 +69,17 @@ class Win32BiometricStoragePlugin extends BiometricStorage {
   ) async {
     _logger.finer('read($name)');
     final credPointer = calloc<Pointer<CREDENTIAL>>();
-    final namePointer = TEXT(name);
+    final namePointer = PCWSTR(name.toNativeUtf16());
     try {
-      if (CredRead(namePointer, CRED_TYPE.CRED_TYPE_GENERIC, 0, credPointer) !=
-          TRUE) {
-        final errorCode = GetLastError();
-        if (errorCode == WIN32_ERROR.ERROR_NOT_FOUND) {
+      final result = CredRead(namePointer, CRED_TYPE_GENERIC, credPointer);
+      if (!result.value) {
+        if (result.error == ERROR_NOT_FOUND) {
           _logger.fine('Unable to find credential of name $name');
         } else {
-          _logger.warning('Error: $errorCode ',
-              WindowsException(HRESULT_FROM_WIN32(errorCode)));
+          _logger.warning(
+            'Error: ${result.error}',
+            WindowsException(HRESULT_FROM_WIN32(result.error)),
+          );
         }
         return null;
       }
@@ -105,24 +106,25 @@ class Win32BiometricStoragePlugin extends BiometricStorage {
     PromptInfo promptInfo,
   ) async {
     _logger.fine('write()');
-    final examplePassword = utf8.encode(content);
-    final blob = examplePassword.allocatePointer();
-    final namePointer = TEXT(name);
-    final userNamePointer = TEXT('flutter.biometric_storage');
+    final Uint8List examplePassword = utf8.encode(content);
+    final blob = calloc<Uint8>(examplePassword.length);
+    blob.asTypedList(examplePassword.length).setAll(0, examplePassword);
+    final namePointer = PWSTR(name.toNativeUtf16());
+    final userNamePointer = PWSTR('flutter.biometric_storage'.toNativeUtf16());
 
     final credential = calloc<CREDENTIAL>()
-      ..ref.Type = CRED_TYPE.CRED_TYPE_GENERIC
+      ..ref.Type = CRED_TYPE_GENERIC
       ..ref.TargetName = namePointer
-      ..ref.Persist = CRED_PERSIST.CRED_PERSIST_LOCAL_MACHINE
+      ..ref.Persist = CRED_PERSIST_LOCAL_MACHINE
       ..ref.UserName = userNamePointer
       ..ref.CredentialBlob = blob
       ..ref.CredentialBlobSize = examplePassword.length;
     try {
       final result = CredWrite(credential, 0);
-      if (result != TRUE) {
-        final errorCode = GetLastError();
+      if (!result.value) {
         throw BiometricStorageException(
-            'Error writing credential $name ($result): $errorCode');
+          'Error writing credential $name: ${result.error}',
+        );
       }
     } finally {
       _logger.fine('free');
